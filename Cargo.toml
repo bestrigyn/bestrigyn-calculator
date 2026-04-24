@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.28"
+meval = "0.2.0"
 rodio = "0.17"
 [profile.release]
 opt-level = 'z'     # Оптимизация по размеру
@@ -14,3 +15,5 @@ panic = 'abort'     # Убирает лишний код обработки ош
 strip = true        # Вырезает символы отладки (самое важное для веса)
 [build-dependencies]
 winres = "0.1"
+[build]
+rustflags = ["-A", "future_incompatible"]

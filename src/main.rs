@@ -1,18 +1,18 @@
 #![windows_subsystem = "windows"]
-// Подключаем только то, что точно есть в стандартных зависимостях
+#![allow(warnings)]
+#![allow(future_incompatible)]
+
 use eframe::egui;
 use std::time::{Instant, Duration};
 use rodio::{OutputStream, Sink, source::Source};
 use std::sync::{Arc, Mutex};
 
-// Хранилище для звука, чтобы он не "засыпал"
 struct AudioState {
     sink: Sink,
-    _stream: OutputStream, 
+    _stream: OutputStream,
 }
 
 fn main() -> eframe::Result {
-    // Инициализируем аудио при старте - это уберет лаги в 15 секунд
     let audio = match OutputStream::try_default() {
         Ok((stream, handle)) => {
             if let Ok(sink) = Sink::try_new(&handle) {
@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     };
     
     eframe::run_native(
-        "bestrigyn calculator 1.0",
+        "bestrigyn calculator V1.1",
         options,
         Box::new(|cc| {
             let mut visuals = egui::Visuals::dark();
@@ -42,143 +42,187 @@ fn main() -> eframe::Result {
 }
 
 struct MyCalc {
-    display: String,
-    first_num: f64,
-    current_op: Option<char>,
-    new_entry: bool,
+    expression: String,
     start_time: Instant,
     audio: Option<Arc<Mutex<AudioState>>>,
+    is_result: bool,
 }
 
 const CPUNK_GREEN: egui::Color32 = egui::Color32::from_rgb(0, 255, 60);
-const CPUNK_BLACK: egui::Color32 = egui::Color32::from_rgb(10, 10, 10);
 
 impl MyCalc {
     fn new(audio: Option<Arc<Mutex<AudioState>>>) -> Self {
         Self {
-            display: "0".to_string(),
-            first_num: 0.0,
-            current_op: None,
-            new_entry: true,
+            expression: "0".to_string(),
             start_time: Instant::now(),
             audio,
+            is_result: false,
         }
     }
 
     fn play_click(&self) {
         if let Some(audio_arc) = &self.audio {
             if let Ok(state) = audio_arc.lock() {
-                let source = rodio::source::SineWave::new(800.0)
-                    .take_duration(Duration::from_millis(50))
-                    .amplify(0.15);
+                let source = rodio::source::SineWave::new(1000.0)
+                    .take_duration(Duration::from_millis(40)) 
+                    .amplify(0.10);
                 state.sink.append(source);
             }
         }
     }
 
-    fn button_v1(&mut self, ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
-        let resp = ui.add_sized(
-            [70.0, 70.0], 
-            egui::Button::new(egui::RichText::new(text).size(28.0).color(color))
-                .fill(egui::Color32::from_rgb(40, 40, 40))
-        );
-        if resp.clicked() {
-            self.play_click();
+    fn input(&mut self, s: &str) {
+        let trimmed = s.trim();
+        let is_op = trimmed == "+" || trimmed == "-" || trimmed == "*" || trimmed == "/";
+        let last_char_is_op = self.expression.trim().ends_with(|c| c == '+' || c == '-' || c == '*' || c == '/');
+
+        if is_op && last_char_is_op { return; }
+
+        self.play_click();
+        if self.expression == "0" || self.is_result {
+            self.expression = trimmed.to_string();
+            self.is_result = false;
+        } else {
+            if is_op {
+                self.expression.push_str(&format!(" {} ", trimmed));
+            } else {
+                self.expression.push_str(trimmed);
+            }
         }
-        resp
+    }
+
+    // Удаление одного символа
+    fn backspace(&mut self) {
+        if self.is_result {
+            self.expression = "0".to_string();
+            self.is_result = false;
+            return;
+        }
+        self.play_click();
+        self.expression.pop();
+        if self.expression.is_empty() || self.expression == " " {
+            self.expression = "0".to_string();
+        }
+        // Убираем лишний пробел, если удалили знак
+        self.expression = self.expression.trim_end().to_string();
+    }
+
+    fn clear(&mut self) {
+        self.play_click();
+        self.expression = "0".to_string();
+        self.is_result = false;
+    }
+
+    fn eval_expression(&mut self) {
+        self.play_click();
+        let to_eval = self.expression.replace(' ', "").replace(',', ".");
+        match meval::eval_str(&to_eval) {
+            Ok(res) => {
+                let res_str = if res.fract() == 0.0 { format!("{:.0}", res) } else { format!("{:.2}", res) };
+                self.expression = res_str;
+                self.is_result = true;
+            }
+            Err(_) => {
+                self.expression = "ERROR".to_string();
+                self.is_result = true;
+            }
+        }
+    }
+
+    fn handle_keys(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            // Читаем ввод текста (для цифр, точек, запятых и знаков на нумпаде)
+            for char in &i.events {
+                if let egui::Event::Text(t) = char {
+                    if "0123456789+-*/".contains(t) {
+                        self.input(t);
+                    } else if t == "," || t == "." {
+                        self.input("."); // Превращаем запятую в точку
+                    }
+                }
+                
+                // Читаем спец-клавиши (Enter, Backspace, Esc)
+                if let egui::Event::Key { key, pressed: true, .. } = char {
+                    match key {
+                        egui::Key::Enter => self.eval_expression(),
+                        egui::Key::Backspace => self.backspace(),
+                        egui::Key::Escape => self.clear(),
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+
+    fn button_v1(&mut self, ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+        ui.add_sized([70.0, 70.0], 
+            egui::Button::new(egui::RichText::new(text).size(28.0).color(color))
+                .fill(egui::Color32::from_rgb(40, 40, 40)))
     }
 }
 
 impl eframe::App for MyCalc {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // ЛИМИТЕР FPS: Теперь проц будет отдыхать 16мс между кадрами
-        ctx.request_repaint_after(Duration::from_millis(16)); 
-        
-        let elapsed_us = self.start_time.elapsed().as_micros() as u64;
+        self.handle_keys(ctx);
+        ctx.request_repaint_after(Duration::from_millis(32)); 
+        let elapsed_ms = self.start_time.elapsed().as_millis() as u64;
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(10.0);
+            ui.add_space(5.0);
+            ui.label(egui::RichText::new("STATION ONLINE").color(CPUNK_GREEN).size(10.0).monospace());
             
-            // Экран с твоим крутым неоновым глитчем
             egui::Frame::canvas(ui.style())
-                .fill(CPUNK_BLACK)
-                .stroke(egui::Stroke::new(2.0, CPUNK_GREEN))
+                .fill(egui::Color32::BLACK).stroke(egui::Stroke::new(2.0, CPUNK_GREEN))
                 .show(ui, |ui| {
                     ui.set_min_height(80.0);
                     ui.set_width(ui.available_width());
-                    
                     ui.vertical_centered(|ui| {
                         ui.add_space(15.0);
-                        let offset_x = ((elapsed_us % 300) as f32 / 150.0) - 1.0;
-                        let glitch_color = if elapsed_us % 300 < 20 { egui::Color32::RED } else { CPUNK_GREEN };
-
+                        let glitch_tick = elapsed_ms / 100; 
+                        let offset_x = if glitch_tick % 9 == 0 { (elapsed_ms % 4) as f32 - 2.0 } else { 0.0 };
                         let painter = ui.painter();
-                        let rect = ui.max_rect();
                         let text_pos = ui.next_widget_position() + egui::vec2(offset_x, 0.0);
-                        
-                        painter.text(text_pos, egui::Align2::CENTER_TOP, &self.display, egui::FontId::monospace(50.0), glitch_color);
-
-                        // Полоски помех
-                        if elapsed_us % 400 < 150 {
-                            for i in 0..3 {
-                                let y = rect.top() + (elapsed_us.wrapping_mul(i + 2) % (rect.height() as u64)) as f32;
-                                painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), y), egui::pos2(rect.right(), y + 2.0)), 0.0, egui::Color32::from_black_alpha(150));
-                            }
-                        }
+                        let font_size = if self.expression.len() > 18 { 16.0 } else if self.expression.len() > 12 { 24.0 } else { 38.0 };
+                        painter.text(text_pos, egui::Align2::CENTER_TOP, &self.expression, egui::FontId::monospace(font_size), CPUNK_GREEN);
                     });
                 });
 
             ui.add_space(20.0);
-
-            // Сетка кнопок
+            
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 egui::Grid::new("btns").spacing([10.0, 10.0]).show(ui, |ui| {
-                    if self.button_v1(ui, "7", CPUNK_GREEN).clicked() { self.add_digit("7"); }
-                    if self.button_v1(ui, "8", CPUNK_GREEN).clicked() { self.add_digit("8"); }
-                    if self.button_v1(ui, "9", CPUNK_GREEN).clicked() { self.add_digit("9"); }
-                    if self.button_v1(ui, "/", egui::Color32::WHITE).clicked() { self.set_op('/'); }
+                    if self.button_v1(ui, "7", CPUNK_GREEN).clicked() { self.input("7"); }
+                    if self.button_v1(ui, "8", CPUNK_GREEN).clicked() { self.input("8"); }
+                    if self.button_v1(ui, "9", CPUNK_GREEN).clicked() { self.input("9"); }
+                    if self.button_v1(ui, "/", egui::Color32::WHITE).clicked() { self.input("/"); }
                     ui.end_row();
 
-                    if self.button_v1(ui, "4", CPUNK_GREEN).clicked() { self.add_digit("4"); }
-                    if self.button_v1(ui, "5", CPUNK_GREEN).clicked() { self.add_digit("5"); }
-                    if self.button_v1(ui, "6", CPUNK_GREEN).clicked() { self.add_digit("6"); }
-                    if self.button_v1(ui, "*", egui::Color32::WHITE).clicked() { self.set_op('*'); }
+                    if self.button_v1(ui, "4", CPUNK_GREEN).clicked() { self.input("4"); }
+                    if self.button_v1(ui, "5", CPUNK_GREEN).clicked() { self.input("5"); }
+                    if self.button_v1(ui, "6", CPUNK_GREEN).clicked() { self.input("6"); }
+                    if self.button_v1(ui, "*", egui::Color32::WHITE).clicked() { self.input("*"); }
                     ui.end_row();
 
-                    if self.button_v1(ui, "1", CPUNK_GREEN).clicked() { self.add_digit("1"); }
-                    if self.button_v1(ui, "2", CPUNK_GREEN).clicked() { self.add_digit("2"); }
-                    if self.button_v1(ui, "3", CPUNK_GREEN).clicked() { self.add_digit("3"); }
-                    if self.button_v1(ui, "-", egui::Color32::WHITE).clicked() { self.set_op('-'); }
+                    if self.button_v1(ui, "1", CPUNK_GREEN).clicked() { self.input("1"); }
+                    if self.button_v1(ui, "2", CPUNK_GREEN).clicked() { self.input("2"); }
+                    if self.button_v1(ui, "3", CPUNK_GREEN).clicked() { self.input("3"); }
+                    if self.button_v1(ui, "-", egui::Color32::WHITE).clicked() { self.input("-"); }
                     ui.end_row();
 
                     if self.button_v1(ui, "C", egui::Color32::RED).clicked() { self.clear(); }
-                    if self.button_v1(ui, "0", CPUNK_GREEN).clicked() { self.add_digit("0"); }
-                    
-                    let eq_btn = ui.add_sized([70.0, 70.0], egui::Button::new(egui::RichText::new("=").size(28.0).color(CPUNK_BLACK)).fill(CPUNK_GREEN));
-                    if eq_btn.clicked() { self.play_click(); self.calc_result(); }
-
-                    if self.button_v1(ui, "+", egui::Color32::WHITE).clicked() { self.set_op('+'); }
+                    if self.button_v1(ui, "0", CPUNK_GREEN).clicked() { self.input("0"); }
+                    if ui.add_sized([70.0, 70.0], egui::Button::new(egui::RichText::new("=").size(28.0).color(egui::Color32::BLACK)).fill(CPUNK_GREEN)).clicked() { self.eval_expression(); }
+                    if self.button_v1(ui, "+", egui::Color32::WHITE).clicked() { self.input("+"); }
                     ui.end_row();
                 });
             });
+            
+            // Кнопка запятой (точки) в интерфейсе
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                if ui.add_sized([70.0, 30.0], egui::Button::new(".")).clicked() { self.input("."); }
+            });
         });
     }
-}
-
-impl MyCalc {
-    fn add_digit(&mut self, digit: &str) {
-        if self.new_entry { self.display = digit.to_string(); self.new_entry = false; }
-        else { if self.display == "0" { self.display = digit.to_string(); } else { self.display.push_str(digit); } }
-    }
-    fn set_op(&mut self, op: char) { self.first_num = self.display.parse().unwrap_or(0.0); self.current_op = Some(op); self.new_entry = true; }
-    fn calc_result(&mut self) {
-        if let Some(op) = self.current_op {
-            let second_num: f64 = self.display.parse().unwrap_or(0.0);
-            let res = match op { '+' => self.first_num + second_num, '-' => self.first_num - second_num, '*' => self.first_num * second_num, '/' => if second_num != 0.0 { self.first_num / second_num } else { 0.0 }, _ => 0.0, };
-            self.display = if res.fract() == 0.0 { format!("{:.0}", res) } else { format!("{:.2}", res) };
-            self.current_op = None; self.new_entry = true;
-        }
-    }
-    fn clear(&mut self) { self.display = "0".to_string(); self.first_num = 0.0; self.current_op = None; self.new_entry = true; }
 }
