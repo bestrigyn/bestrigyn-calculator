@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     };
     
     eframe::run_native(
-        "bestrigyn calculator V1.1",
+        "bestrigyn terminal chain-calc",
         options,
         Box::new(|cc| {
             let mut visuals = egui::Visuals::dark();
@@ -73,6 +73,7 @@ impl MyCalc {
 
     fn input(&mut self, s: &str) {
         let trimmed = s.trim();
+        // БАГ-ФИКС: Проверка на блокировку двойных знаков
         let is_op = trimmed == "+" || trimmed == "-" || trimmed == "*" || trimmed == "/";
         let last_char_is_op = self.expression.trim().ends_with(|c| c == '+' || c == '-' || c == '*' || c == '/');
 
@@ -103,7 +104,6 @@ impl MyCalc {
         if self.expression.is_empty() || self.expression == " " {
             self.expression = "0".to_string();
         }
-        // Убираем лишний пробел, если удалили знак
         self.expression = self.expression.trim_end().to_string();
     }
 
@@ -113,13 +113,15 @@ impl MyCalc {
         self.is_result = false;
     }
 
+    // ХОТФИКС 1: Выводим выражение полностью `2+2=4`
     fn eval_expression(&mut self) {
         self.play_click();
         let to_eval = self.expression.replace(' ', "").replace(',', ".");
         match meval::eval_str(&to_eval) {
             Ok(res) => {
                 let res_str = if res.fract() == 0.0 { format!("{:.0}", res) } else { format!("{:.2}", res) };
-                self.expression = res_str;
+                // Сохраняем и выражение, и результат
+                self.expression = format!("{} = {}", self.expression, res_str);
                 self.is_result = true;
             }
             Err(_) => {
@@ -131,17 +133,14 @@ impl MyCalc {
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
         ctx.input(|i| {
-            // Читаем ввод текста (для цифр, точек, запятых и знаков на нумпаде)
             for char in &i.events {
                 if let egui::Event::Text(t) = char {
                     if "0123456789+-*/".contains(t) {
                         self.input(t);
                     } else if t == "," || t == "." {
-                        self.input("."); // Превращаем запятую в точку
+                        self.input("."); 
                     }
                 }
-                
-                // Читаем спец-клавиши (Enter, Backspace, Esc)
                 if let egui::Event::Key { key, pressed: true, .. } = char {
                     match key {
                         egui::Key::Enter => self.eval_expression(),
@@ -183,7 +182,10 @@ impl eframe::App for MyCalc {
                         let painter = ui.painter();
                         let text_pos = ui.next_widget_position() + egui::vec2(offset_x, 0.0);
                         let font_size = if self.expression.len() > 18 { 16.0 } else if self.expression.len() > 12 { 24.0 } else { 38.0 };
-                        painter.text(text_pos, egui::Align2::CENTER_TOP, &self.expression, egui::FontId::monospace(font_size), CPUNK_GREEN);
+                        
+                        // ХОТФИКС 2: Меняем * на крестик × только для дисплея
+                        let display_expr = self.expression.replace("*", "×");
+                        painter.text(text_pos, egui::Align2::CENTER_TOP, display_expr, egui::FontId::monospace(font_size), CPUNK_GREEN);
                     });
                 });
 
@@ -201,7 +203,8 @@ impl eframe::App for MyCalc {
                     if self.button_v1(ui, "4", CPUNK_GREEN).clicked() { self.input("4"); }
                     if self.button_v1(ui, "5", CPUNK_GREEN).clicked() { self.input("5"); }
                     if self.button_v1(ui, "6", CPUNK_GREEN).clicked() { self.input("6"); }
-                    if self.button_v1(ui, "*", egui::Color32::WHITE).clicked() { self.input("*"); }
+                    // В интерфейсе тоже рисуем ×
+                    if self.button_v1(ui, "×", egui::Color32::WHITE).clicked() { self.input("*"); }
                     ui.end_row();
 
                     if self.button_v1(ui, "1", CPUNK_GREEN).clicked() { self.input("1"); }
@@ -218,7 +221,6 @@ impl eframe::App for MyCalc {
                 });
             });
             
-            // Кнопка запятой (точки) в интерфейсе
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 if ui.add_sized([70.0, 30.0], egui::Button::new(".")).clicked() { self.input("."); }
